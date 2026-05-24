@@ -1,0 +1,35 @@
+name: Actualizar MeterSight Diario
+
+on:
+  schedule:
+    - cron: '0 12 * * *'
+  workflow_dispatch:
+
+jobs:
+  actualizar:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Descargar Google Sheet
+        run: |
+          curl -sL "https://docs.google.com/spreadsheets/d/1Kd2-PaJ8zKrIfMVjFkFruVmsqCqJKMHgtXAN-EiwD9w/export?format=csv&gid=655267373" -o bd_telemedida.csv
+
+      - name: Procesar BD e inyectar en HTML
+        run: python3 actualizar_bd.py
+
+      - name: Commit y push
+        run: |
+          git config user.email "rosaura.lopez@bia.app"
+          git config user.name "Bia MeterSight Bot"
+          git add index.html
+          if git diff --staged --quiet; then
+            echo "Sin cambios"
+          else
+            git commit -m "BD actualizada $(date +'%d/%m/%Y %H:%M')"
+            git push
+          fi
