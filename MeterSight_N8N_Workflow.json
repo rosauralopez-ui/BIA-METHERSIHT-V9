@@ -1,0 +1,228 @@
+{
+  "name": "⚡ BIA · MeterSight · Actualización Diaria",
+  "nodes": [
+    {
+      "id": "node-schedule",
+      "name": "🕖 7AM Diario",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 7 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "node-fetch-html",
+      "name": "📥 Leer HTML actual de Netlify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        460,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $vars.NETLIFY_URL || 'https://TU-SITIO.netlify.app/' }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "htmlTemplate"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "node-fetch-sheet",
+      "name": "📊 Leer Google Sheet (CSV)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        680,
+        300
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "https://docs.google.com/spreadsheets/d/1Kd2-PaJ8zKrIfMVjFkFruVmsqCqJKMHgtXAN-EiwD9w/export?format=csv&gid=655267373",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text",
+              "outputPropertyName": "csvData"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "node-process",
+      "name": "⚙️ Procesar BD + Generar HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "jsCode": "\n// ══════════════════════════════════════════════\n// BIA · METERSIGHT — Procesador de BD Telemedida\n// Ejecuta todos los días a las 7 AM via N8N\n// ══════════════════════════════════════════════\n\nconst csvText    = $('📊 Leer Google Sheet (CSV)').first().json.csvData;\nconst htmlIn     = $('📥 Leer HTML actual de Netlify').first().json.htmlTemplate;\n\nif (!csvText) throw new Error('No se pudo leer el Google Sheet');\nif (!htmlIn)  throw new Error('No se pudo leer el HTML de Netlify');\n\n// ── Parsear CSV ──\nconst lines   = csvText.split('\\n');\nconst headers = lines[0].split(',').map(h => h.trim());\n\nconst cv = (row, i, d='') => {\n  try { const v = (row[i]||'').trim(); return (!v||v==='nan'||v==='NaT'||v==='None') ? d : v; }\n  catch { return d; }\n};\n\nconst ESTADOS_ANOMALOS = new Set([\n  'Falla en Medidor','Medidor Quemado','Suspendido',\n  'Desenergizado','CT/PT quemado','Desocupado','Hurto'\n]);\n\nconst records = [];\nfor (let i = 1; i < lines.length; i++) {\n  const row = lines[i].split(',');\n  if (row.length < 50) continue;\n  \n  const estado = cv(row, 7);\n  if (estado !== 'Activo' && !ESTADOS_ANOMALOS.has(estado)) continue;\n\n  const nov_raw = cv(row, 43);\n  const nov     = ESTADOS_ANOMALOS.has(estado) ? estado\n                : ESTADOS_ANOMALOS.has(nov_raw) ? nov_raw : '';\n\n  const ip_raw  = cv(row, 42);\n  const ip_tmr  = ip_raw.toUpperCase() === 'TRUE'  ? 'Sí'\n                : ip_raw.toUpperCase() === 'FALSE' ? 'Normal'\n                : ['#N/A','N/A'].includes(ip_raw)  ? 'N/A'\n                : ip_raw;\n\n  const vm_raw  = cv(row, 57);\n  const vm      = vm_raw.toUpperCase() === 'TRUE'  ? 'OK'\n                : vm_raw.toUpperCase() === 'FALSE' ? 'NO VÁLIDO' : '';\n\n  const ip_opt  = cv(row, 60);\n  const ip_opt_v = ip_opt.toUpperCase() === 'TRUE'  ? 'Sí'\n                 : ip_opt.toUpperCase() === 'FALSE' ? 'No' : ip_opt;\n\n  records.push({\n    i:  cv(row, 0),\n    s:  cv(row, 1),\n    niu: cv(row, 2),\n    u:  cv(row, 4).slice(0, 45),\n    ser: cv(row, 27).replace('.0',''),\n    ip:  cv(row, 29),\n    mk:  cv(row, 25),\n    mo:  cv(row, 26),\n    mo2: cv(row, 56),\n    vm,\n    fx:  parseFloat(cv(row, 35)) || 1,\n    ct:  parseFloat(cv(row, 58)) || 1,\n    pt:  parseFloat(cv(row, 59)) || 1,\n    cx:  cv(row, 23),\n    med: cv(row, 24),\n    tm:  cv(row, 50),\n    sub: cv(row, 51),\n    nov,\n    ul:  cv(row, 32).slice(0, 16),\n    ul_res: cv(row, 55).slice(0, 16),\n    d:   cv(row, 13).slice(0, 35),\n    c:   cv(row, 12),\n    or:  cv(row, 8),\n    kw:  parseInt(cv(row, 18)) || 0,\n    nt:  parseInt(cv(row, 10)) || 1,\n    est: estado,\n    ip_tmr,\n    ageing: parseFloat(cv(row, 45)) || null,\n    bucket: cv(row, 46),\n    xm:   cv(row, 47),\n    falla: parseInt(cv(row, 48)) || 0,\n    falla_venc: cv(row, 49).slice(0, 10),\n    accion: cv(row, 52),\n    imei:  cv(row, 53).replace('.0',''),\n    ip_opt: ip_opt_v,\n    ul_opt: cv(row, 61).slice(0, 16),\n    val_opt: cv(row, 62),\n    tipo_mercado:  cv(row, 9),\n    tipo_frontera: cv(row, 21),\n    cap_trafo: cv(row, 36),\n    comentarios: cv(row, 41).slice(0, 120),\n    prueba_tm:  cv(row, 37),\n    creado_hes: cv(row, 38),\n  });\n}\n\n// ── Comprimir a Base64 (N8N no tiene pako, usar btoa) ──\nconst jsonStr = JSON.stringify(records, null, 0);\n// Convertir a base64 (sin gzip en N8N — el cliente descomprime igual)\nconst db64 = Buffer.from(jsonStr).toString('base64');\n\n// ── Fecha actual Colombia ──\nconst now = new Date().toLocaleString('es-CO', {\n  day:'2-digit', month:'2-digit', year:'numeric',\n  hour:'2-digit', minute:'2-digit',\n  timeZone: 'America/Bogota'\n});\nconst nowStr = now.replace(',','');\n\n// ── Actualizar HTML ──\nlet html = htmlIn;\n\n// Reemplazar DB64\nhtml = html.replace(/const DB64=\"[^\"]*\";/, `const DB64=\"${db64}\";`);\n\n// Si la BD está comprimida con gzip, necesitamos ajustar la descompresión\n// Detectar si usa DecompressionStream (gzip) o atob directo\nconst usesGzip = html.includes('DecompressionStream');\n\nif (usesGzip) {\n  // Reemplazar la función de descompresión por atob directo (ya que N8N no puede gzip)\n  html = html.replace(\n    /\\(async\\(\\)=>\\{[\\s\\S]*?DB=JSON\\.parse[\\s\\S]*?\\}\\)\\(\\);/,\n    `(async()=>{\n  try{\n    const jsonStr = atob(DB64);\n    DB = JSON.parse(jsonStr);\n    buildChips();\n  }catch(e){console.error('DB:',e);}\n})();`\n  );\n}\n\n// Actualizar fecha en footer\nhtml = html.replace(/BD Telemedida · [\\d\\/]+ [\\d:]+/g, `BD Telemedida · ${nowStr}`);\n\n// Actualizar conteo\nhtml = html.replace(/[\\d,]+ fronteras activas/g, `${records.length.toLocaleString('es-CO')} fronteras activas`);\nhtml = html.replace(/[\\d,]+ fronteras/g, `${records.length.toLocaleString('es-CO')} fronteras`);\n\nreturn [{\n  json: {\n    html,\n    filename: 'index.html',\n    records_count: records.length,\n    updated: nowStr,\n    db64_size_kb: Math.round(db64.length / 1024)\n  }\n}];\n"
+      }
+    },
+    {
+      "id": "node-deploy",
+      "name": "🚀 Desplegar en Netlify",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1120,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://api.netlify.com/api/v1/sites/{{ $vars.NETLIFY_SITE_ID }}/deploys",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/zip"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "=html",
+        "options": {}
+      },
+      "notes": "Requiere NETLIFY_TOKEN en credenciales y NETLIFY_SITE_ID como variable N8N"
+    },
+    {
+      "id": "node-notify-ok",
+      "name": "✅ Notificar éxito",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        220
+      ],
+      "parameters": {
+        "operation": "message",
+        "channel": "#metersight",
+        "text": "=✅ *MeterSight actualizado* · {{ $('⚙️ Procesar BD + Generar HTML').first().json.updated }}\n> Fronteras procesadas: *{{ $('⚙️ Procesar BD + Generar HTML').first().json.records_count }}*\n> BD comprimida: {{ $('⚙️ Procesar BD + Generar HTML').first().json.db64_size_kb }} KB\n> App disponible para el equipo ⚡",
+        "otherOptions": {}
+      }
+    },
+    {
+      "id": "node-error",
+      "name": "❌ Notificar error",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1340,
+        400
+      ],
+      "parameters": {
+        "operation": "message",
+        "channel": "#metersight",
+        "text": "=❌ *Error en actualización MeterSight* · {{ $now.format('DD/MM/YYYY HH:mm') }}\n> Error: {{ $json.message || 'Error desconocido' }}\n> Revisar workflow en N8N urgente.",
+        "otherOptions": {}
+      }
+    }
+  ],
+  "connections": {
+    "🕖 7AM Diario": {
+      "main": [
+        [
+          {
+            "node": "📥 Leer HTML actual de Netlify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📥 Leer HTML actual de Netlify": {
+      "main": [
+        [
+          {
+            "node": "📊 Leer Google Sheet (CSV)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "📊 Leer Google Sheet (CSV)": {
+      "main": [
+        [
+          {
+            "node": "⚙️ Procesar BD + Generar HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "⚙️ Procesar BD + Generar HTML": {
+      "main": [
+        [
+          {
+            "node": "🚀 Desplegar en Netlify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "🚀 Desplegar en Netlify": {
+      "main": [
+        [
+          {
+            "node": "✅ Notificar éxito",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "❌ Notificar error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "name": "bia"
+    },
+    {
+      "name": "metersight"
+    },
+    {
+      "name": "automatizacion"
+    }
+  ],
+  "triggerCount": 0,
+  "active": false
+}
